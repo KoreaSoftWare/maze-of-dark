@@ -1,0 +1,275 @@
+/*
+ * 기존의 도트매트릭스 구현 방식과 다른점이
+ * 2차원 배열 2진수가 아닌
+ * 16진수 1차원 배열이다.
+ * 인덱스 하나가 X축 한 줄이고(0x왼쪽4칸오른쪽4칸)
+ * 인덱스 위치값이 y축이 되는 것임
+ * 아래~위 == 왼쪽~오른쪽 위치 순
+ * uint8_t 타입으로 음수를 뺀 정수형 1바이트로 메모리 공간도 줄어들음(어차피 8*8밖에 안됨)
+ * 결론은 훨씬 간편해 졌음
+ * (혹시 까먹을 까봐 과거의 내가 적은 주석.....)
+*/
+#include <SPI.h>                  
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <time.h>
+
+#define NOTE_1  49
+#define NOTE_2  985
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+static uint8_t maze[13][8] = {{0x20, 0x4f, 0x10, 0x66, 0x0e, 0xe2, 0x0b, 0xf8}, //8*8의 미로를 구현함
+                             {0x08, 0xea, 0x82, 0xde, 0x01, 0x7e, 0x08, 0xe3},
+                             {0x04, 0xb5, 0x21, 0xeb, 0x08, 0x5e, 0x51, 0x44},
+                             {0x41, 0x5d, 0x51, 0x54, 0x5a, 0x50, 0x57, 0x10},
+                             {0x04, 0xf5, 0x55, 0x41, 0x54, 0x09, 0xed, 0x08},
+                             {0x00, 0x00, 0x21, 0xe7, 0x21, 0xe7, 0x00, 0x00},
+                             {0x00, 0x3c, 0x42, 0x81, 0x00, 0x66, 0x66, 0x00},
+                             {0x00, 0x7e, 0x4a, 0x6a, 0x4a, 0x5a, 0x48, 0x00},
+                             {0xfe, 0x82, 0xba, 0xaa, 0xa2, 0xbe, 0x80, 0xff},
+                             {0x00, 0xaa, 0xaa, 0xaa, 0xaa, 0xfa, 0x12, 0x46},
+                             {0x80, 0xba, 0xe8, 0x0e, 0x60, 0x4f, 0x40, 0x7e},
+                             {0x08, 0x6a, 0x2a, 0xaa, 0x2a, 0x62, 0xfe, 0x00},
+                             {0x40, 0x96, 0xa8, 0x0a, 0xb4, 0x22, 0x48, 0x36}};
+
+/*
+ * 미로만 따로 구현하고 처리하는 것이 좋을거 같지만
+ * 가독성이 매우 떨어질 뿐더러
+ * 값이 재각각이기 때문에 위치값을 뽑아내기가 불가능
+*/
+static uint8_t point[13][8] = {{0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}, //시작점
+                           {0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00},
+                           {0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00},
+                           {0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+                           {0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00},
+                           {0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00},
+                           {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80},
+                           {0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+                           {0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00},
+                           {0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00},
+                           {0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+                           {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80},
+                           {0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00}};
+                           
+static uint8_t e_point[13][8] = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}, //끝점
+                             {0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00},
+                             {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
+                             {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
+                             {0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+                             {0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00},
+                             {0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00},
+                             {0x00, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00},
+                             {0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+                             {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01},
+                             {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80},
+                             {0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00},
+                             {0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00}};
+
+static uint8_t now_point[8]; //현재 위치 저장
+static uint8_t data[4] = {0x0, 0x0, 0x0, 0x0};         
+static uint8_t i = 1;   
+
+const int CE = 10;        
+static int p_number = 0;
+static int rand_index = 0;
+
+int Joystick_pin_x = A1; //조이스틱 x값
+int Joystick_pin_y = A0; //조이스틱 y값
+int Button_pin = 8;
+int p_y[13] = {0, 3, 2, 0, 2, 4, 7, 0, 3, 4, 1, 7, 3}; //각 미로의 y축값
+int piezo = 3; //시작 음 피에조 핀번호
+
+int green = 6; //시작 표시등 핀 번호
+int blue = 5;
+int red = 4;
+
+void print_maze(){ //미로 출력
+  int j;
+  int x = 2;
+
+  for ( j = 0; j < 8; j++){
+    if (now_point[j] != 0x00) p_number = j;
+
+    data[0] = ~maze[rand_index][j];         //미로는 빨간색    
+    data[1] = ~e_point[rand_index][j];      //끝점은 초록색       
+    data[2] = 0xFF;             
+    data[3] = 0x01 << j;    
+
+    digitalWrite(CE, LOW);     
+    SPI.transfer(data[0]);         
+    SPI.transfer(data[2]);         
+    SPI.transfer(data[1]);        
+    SPI.transfer(data[3]);      
+    digitalWrite(CE, HIGH);    
+  }
+}
+
+void clear_maze(){ //미로 지우기
+  int j;
+  int x = 2;
+
+  for ( j = 0; j < 8; j++){
+    data[0] = 0xFF;           
+    data[1] = 0xFF;             
+    data[2] = 0xFF;             
+    data[3] = 0x01 << j;   
+
+    digitalWrite(CE, LOW);     
+    SPI.transfer(data[0]);         
+    SPI.transfer(data[2]);         
+    SPI.transfer(data[1]);        
+    SPI.transfer(data[3]);      
+    digitalWrite(CE, HIGH);    
+  }
+}
+
+void working(){ //캐릭터 움직이기 (파란색 표시)
+  int j;
+  int x = 2;
+
+  for ( j = 0; j < 8; j++){
+    if (now_point[j] != 0x00) p_number = j;
+
+    data[0] = 0xFF;             
+    data[1] = 0xFF;             
+    data[2] = ~now_point[j];             
+    data[3] = 0x01 << j;    
+
+    digitalWrite(CE, LOW);     
+    SPI.transfer(data[0]);        
+    SPI.transfer(data[2]);         
+    SPI.transfer(data[1]);        
+    SPI.transfer(data[3]);      
+    digitalWrite(CE, HIGH);    
+  }
+}
+
+void setup() {
+  pinMode(piezo, OUTPUT);
+  pinMode(CE, OUTPUT);  
+  pinMode(green, OUTPUT);
+  pinMode(blue, OUTPUT);
+  pinMode(red, OUTPUT);
+  
+  SPI.begin();     
+  Serial.begin(9600); 
+
+  pinMode(8, INPUT_PULLUP);
+}
+
+void loop() {
+  rand_index = random(0, 13); //미로는 랜덤으로 생성
+  int y = p_y[rand_index]; //그 미로의 y축값을 지정
+  
+  lcd.init();            //여기서 부터  lcd 매트릭스 출력
+  lcd.backlight();
+
+  lcd.setCursor(1, 0);
+  lcd.print("Are you ready?");
+  lcd.setCursor(0,1);
+  lcd.print("push the button!");
+  
+  while(1){ // 게임의 시작여부는 버튼으로 
+    int Button = digitalRead(Button_pin);
+    if(Button == 0) break;
+  }
+
+  lcd.setCursor(0, 1);
+  lcd.print("                ");
+  delay(1500);
+
+  lcd.setCursor(6, 1); // 버튼을 누를 시 시작 알림 led와 피에조 작동
+  lcd.print("0011");
+  analogWrite(piezo, NOTE_1);
+  digitalWrite(red, HIGH);
+  delay(500);
+  analogWrite(piezo, 0);
+  delay(500);
+  
+  lcd.setCursor(6, 1);
+  lcd.print("0010");
+  analogWrite(piezo, NOTE_1);
+  digitalWrite(blue, HIGH);
+  delay(500);
+  analogWrite(piezo, 0);
+  delay(500);
+
+  analogWrite(piezo, 0);
+
+  lcd.setCursor(6, 1);
+  lcd.print("0001");
+  digitalWrite(green, HIGH);
+  analogWrite(piezo, NOTE_1);
+  delay(500);
+  analogWrite(piezo, 0);
+  delay(500);
+  
+  lcd.clear();
+
+  lcd.setCursor(5, 0);
+  lcd.print("start!");
+  
+  digitalWrite(green, LOW);
+  digitalWrite(blue, LOW);
+  digitalWrite(red, LOW);
+  
+  tone(piezo, NOTE_2, 250);
+  delay(500);
+  analogWrite(piezo, 0);
+  
+  for(int i=0; i<8; i++) now_point[i] = point[rand_index][i]; // 현재 위치는 랜덤으로 설정된 미로의 시작점이 됨
+  
+  while (1) { // 끝점에 이동할 때까지 무한루프
+    int value_x = analogRead(Joystick_pin_x);
+    int value_y = analogRead(Joystick_pin_y);
+    int real_x = (value_x - 500) / 100;        //정밀한 값 측정을 위해 정량화
+    int real_y = (value_y - 500) / 100;
+    
+    if (-5 <= real_x && real_x < 0 && !(now_point[y] == 0x01) //조이스틱을 오른쪽으로 움직이면서 벽에 부딛히지 않을 때 오른쪽으로 이동
+        && ((now_point[y] >> 1) | maze[rand_index][y]) > maze[rand_index][y]) {
+      now_point[y] = now_point[y] >> 1;
+      delay(300);
+    }
+    else if (0 < real_x && real_x <= 5 && !(now_point[y] == 0x80) //조이스틱을 왼쪽으로 움직이면서 벽에 부딛히지 않을 때 왼쪽으로 이동
+             && ((now_point[y] << 1) | maze[rand_index][y]) > maze[rand_index][y]) {
+      now_point[y] = now_point[y] << 1;
+      delay(300); 
+    }
+
+    if (-5 <= real_y && real_y < 0 && !(y == 7) //조이스틱을 아래쪽으로 움직이면서 벽에 부딛히지 않을 때 아래쪽으로 이동
+        && (now_point[y] | maze[rand_index][y + 1]) > maze[rand_index][y + 1]) {
+      int temp = now_point[y+1];
+      now_point[y + 1] = now_point[y];
+      now_point[y] = temp;
+      y++;
+      delay(300);
+    }
+    else if (0 < real_y && real_y <= 5 && !(y == 0) //조이스틱을 위쪽으로 움직이면서 벽에 부딛히지 않을 때 위쪽으로 이동
+             && (now_point[y] | maze[rand_index][y - 1]) > maze[rand_index][y - 1]) {
+      int temp = now_point[y-1];
+      now_point[y - 1] = now_point[y];
+      now_point[y] = temp;
+      y--;
+      delay(300);
+    }
+    if (now_point[y] == e_point[rand_index][y]) {// 끝점에 도달했을 경우 빠져 나감
+      break;
+    }
+    working();
+  } 
+  lcd.clear();
+
+  lcd.setCursor(4,0); // 현재 미로를 모두 보여주고 재시작 여부를 확인
+  lcd.print("replay??");
+  lcd.setCursor(0,1);
+  lcd.print("push the button!");
+  
+  while (1){// 재시작은 조이스틱 버튼을 누르는 것
+    int Button = digitalRead(Button_pin);
+    if(Button == 0) break;
+    print_maze();
+  }
+  clear_maze(); //재시작을 위해 모두 리셋
+  y = 0; 
+}
